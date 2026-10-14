@@ -1,0 +1,100 @@
+import { setTimeout as delay } from "node:timers/promises";
+import type { Lane, Run } from "../src/run-model";
+
+export type ClaimedRun = { run: Run; activity: unknown[] };
+
+// Claims stay serial so a lost reply can retry the same durable reservation.
+// Native execution is concurrent; each conversation keeps its own controller,
+// journal, master/child IDs, browser capability and completion receipt.
+// Standard work uses at most `concurrency` slots. Quick work can use those
+// when free, plus `quickConcurrency` slots that standard work never takes.
+export async function runPool(options: {
+  concurrency: number;
+  quickConcurrency?: number;
+  signal: AbortSignal;
+  // Stop claiming; each conversation returns at its next pause between turns.
+  drain?: AbortSignal;
+  once?: boolean;
+  claim: (activeRunIds: string[], lanes: Lane[]) => Promise<ClaimedRun | null>;
+  execute: (claim: ClaimedRun, control: AbortController) => Promise<void>;
+  onError: (error: unknown, claim?: ClaimedRun) => void;
+  pollMs?: number;
+}) {
+  const quick = options.quickConcurrency ?? 0;
+  if (
+    !Number.isInteger(options.concurrency) ||
+    options.concurrency < 1 ||
+    options.concurrency > 5
+  )
+    throw Error("Runner concurrency must be between one and five.");
+  if (!Number.isInteger(quick) || quick < 0 || quick > 5)
+    throw Error("Runner quick concurrency must be between zero and five.");
+  const active = new Map<string, { task: Promise<void>; lane: Lane }>();
+  const controls = new Set<AbortController>();
+  const stop = () => {
+    for (const control of controls) control.abort("shutdown");
+  };
+  options.signal.addEventListener("abort", stop, { once: true });
+  const waiting = options.drain
+    ? AbortSignal.any([options.signal, options.drain])
+    : options.signal;
+  const pause = () =>
+    delay(options.pollMs ?? 2000, undefined, {
+      signal: waiting,
+    }).catch(() => {});
+  let failure: unknown;
+  try {
+    while (!waiting.aborted) {
+      const standard = [...active.values()].filter(
+        (item) => item.lane === "standard",
+      ).length;
+      const lanes: Lane[] =
+        active.size >= options.concurrency + quick
+          ? []
+          : standard < options.concurrency
+            ? ["standard", "quick"]
+            : ["quick"];
+      if (!lanes.length) {
+        await Promise.race([...active.values()].map((item) => item.task));
+        continue;
+      }
+      try {
+        const claim = await options.claim([...active.keys()], lanes);
+        // A shutdown can arrive while the claim is in flight. Leave that saved
+        // claim for this same runner's restart, without starting a native turn.
+        if (waiting.aborted) break;
+        if (!claim) {
+          if (options.once) break;
+          await pause();
+          continue;
+        }
+        if (active.has(claim.run.id))
+          throw Error("The runner received an already active conversation.");
+        const control = new AbortController();
+        controls.add(control);
+        const task = Promise.resolve()
+          .then(() => options.execute(claim, control))
+          .catch(async (error) => {
+            failure = error;
+            options.onError(error, claim);
+            if (!options.once) await pause();
+          })
+          .finally(() => {
+            active.delete(claim.run.id);
+            controls.delete(control);
+          });
+        active.set(claim.run.id, { task, lane: claim.run.lane ?? "standard" });
+        if (options.once) break;
+      } catch (error) {
+        failure = error;
+        options.onError(error);
+        if (options.once) break;
+        await pause();
+      }
+    }
+    await Promise.all([...active.values()].map((item) => item.task));
+    if (options.once && failure) throw failure;
+  } finally {
+    options.signal.removeEventListener("abort", stop);
+  }
+}

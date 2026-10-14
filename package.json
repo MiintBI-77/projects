@@ -1,0 +1,45 @@
+{
+  "name": "project-overview",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5278 --strictPort",
+    "dev:api": "wrangler dev --config wrangler.local.jsonc --ip 127.0.0.1 --port 8798",
+    "build": "vite build && wrangler deploy --dry-run --outdir dist/worker",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types --include-runtime=false",
+    "test": "tsx --test tests/*.test.ts tests/*.test.mjs",
+    "collect": "tsx collector/main.ts",
+    "collector:build": "esbuild collector=collector/main.ts service=collector/service.ts work-item=hooks/work-item.ts runner=runner/main.ts --bundle --platform=node --format=esm --outdir=.local --out-extension:.js=.mjs",
+    "runner": "tsx runner/main.ts",
+    "hooks:install": "node scripts/install-hooks.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/public-sans": "^5.2.0",
+    "@tanstack/react-query": "^5.90.0",
+    "@tanstack/react-router": "1.170.33",
+    "markdown-it": "^15.0.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261012.1",
+    "@playwright/mcp": "0.0.83",
+    "@types/markdown-it": "^14.2.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitejs/plugin-react": "6.1.1",
+    "esbuild": "0.28.1",
+    "miniflare": "5.20261006.1-alpha",
+    "prettier": "3.9.6",
+    "tsx": "^4.20.0",
+    "typescript": "6.0.3",
+    "vite": "8.2.2",
+    "wrangler": "4.150.0"
+  }
+}

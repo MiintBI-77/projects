@@ -1,0 +1,8 @@
+{
+  "host": "studio",
+  "root": "/Users/you/code",
+  "home": "/Users/you",
+  "endpoint": "http://127.0.0.1:8798",
+  "agents": ["claude"],
+  "projects": {}
+}

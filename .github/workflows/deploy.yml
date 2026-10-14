@@ -1,0 +1,58 @@
+name: Deploy
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  checks: read
+  statuses: read
+  pull-requests: read
+  id-token: write
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Fill in the deployment's identity
+        env:
+          PROJECTS_HOST: ${{ vars.PROJECTS_HOST }}
+          PROJECTS_PORTFOLIO: ${{ vars.PROJECTS_PORTFOLIO }}
+          PROJECTS_OWNER_EMAIL: ${{ vars.PROJECTS_OWNER_EMAIL }}
+          PROJECTS_EMAIL_FROM: ${{ vars.PROJECTS_EMAIL_FROM }}
+          PROJECTS_TIME_ZONE: ${{ vars.PROJECTS_TIME_ZONE }}
+        run: node .github/scripts/deployment-config.mjs
+      - name: Verify release gates and identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          DOPPLER_IDENTITY_ID: ${{ vars.DOPPLER_IDENTITY_ID }}
+          SECURITY_REVIEW_BOT_ID: ${{ vars.SECURITY_REVIEW_BOT_ID }}
+        run: node .github/scripts/release-gates.mjs
+      - run: npm audit --audit-level=high
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - uses: DopplerHQ/secrets-fetch-action@451892f16195f9ac360e1a5bcbf0b5fd0e957534
+        id: deployment-secrets
+        with:
+          auth-method: oidc
+          doppler-identity-id: ${{ vars.DOPPLER_IDENTITY_ID }}
+          doppler-project: project-overview
+          doppler-config: prod
+          inject-env-vars: 'true'
+      - run: node .github/scripts/build-secrets-file.mjs "${RUNNER_TEMP}/projects-secrets.json"
+      - name: Deploy and verify production
+        run: node .github/scripts/deploy.mjs "${RUNNER_TEMP}/projects-secrets.json"

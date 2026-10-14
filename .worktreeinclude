@@ -1,0 +1,10 @@
+# Gitignored local files copied into every new Claude or Codex worktree.
+# Only files that exist and are gitignored are copied; tracked files never are.
+.claude/settings.local.json
+.claude/launch.json
+.dev.vars
+.dev.vars.*
+.env
+.env.local
+AGENTS.override.md
+CLAUDE.local.md

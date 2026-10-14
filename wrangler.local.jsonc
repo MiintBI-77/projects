@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "project-overview-local",
+  "main": "worker/local.ts",
+  "compatibility_date": "2026-09-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true,
+  },
+  "vars": {
+    "ALLOWED_EMAILS": "",
+    "PORTFOLIO_ID": "local",
+    "SITE_URL": "http://127.0.0.1:8798",
+    "TIME_ZONE": "UTC",
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "PORTFOLIOS", "class_name": "Portfolio" },
+      { "name": "CONVERSATIONS", "class_name": "Conversation" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Portfolio"] },
+    { "tag": "v2", "new_sqlite_classes": ["Conversation"] },
+  ],
+}

@@ -1,0 +1,338 @@
+# Projects
+
+Projects is a private site for running your software work from a phone or a
+desktop. It shows the repositories on your machines, with their checkouts,
+native Claude Code and Codex sessions, pull requests and health, and it runs
+**conversations**: you state an outcome, a master agent plans it, hands the work
+to native Claude Code or Codex sessions on one of your machines, checks the
+evidence and reports back. Everything runs with your own logins and
+subscriptions on machines you own; the site holds no GitHub, model or mailbox
+credential.
+
+To run your own copy, see [Self-hosting](docs/self-host.md).
+
+## Views
+
+- **Today** is where you work: start a conversation, clear what is waiting on
+  you (**Your move**: needs an answer, failed, ready to review, stopped, or
+  running but waiting on a step only you can take), follow what is running
+  (**Working**) and keep the bigger work in view. On a phone a selected
+  conversation takes the screen; on a desktop it opens beside the queue.
+- **Inbox** (optional) lists email waiting on you and turns each into a reply
+  conversation in one step.
+- **Projects** shows repository health on every machine and the machines
+  themselves: add one, set their order, replace tokens or remove one.
+- **Archive** keeps what you marked Done or archived, with Reopen and Restore.
+
+The selected view, project, conversation and archive filter are URL search
+parameters, so reloads, bookmarks and browser Back work.
+
+## How it works
+
+A React single-page app (TanStack Router and Query) polls a TypeScript
+Cloudflare Worker every 30 seconds. The Worker keeps one SQLite Durable Object
+per portfolio owner, holding snapshots, machines, archives, sessions,
+notifications, queued requests and the daily review, and one per conversation,
+holding its messages, claim, receipts, progress, screenshots and browser.
+
+Each connected machine runs two background services:
+
+- the **collector** publishes a snapshot every two minutes: repositories,
+  worktrees, native sessions, pull requests and, on the machine on duty, work
+  items and the inbox;
+- the **runner** claims conversations over outbound HTTPS and runs the native
+  sessions for them.
+
+Native transcripts, prompts and tool output never leave the machine.
+
+Projects are selected by GitHub repository identity, not folder. Discovery
+follows reorganisations, and a repository opts in with a `.project-overview.json`
+file (a stable id, display name and canonical plan; see
+[the agent guide](public/agents.md)) or by name in the machine's config. Each
+snapshot replaces that machine's previous one. Observation times are scan-start
+times, so a slower, older scan cannot overwrite newer work, and a failed
+discovery publishes nothing rather than declaring projects gone.
+
+## Machines
+
+The owner adds a machine on the Projects page by naming it. The site shows its
+id and two tokens once: a **collector** token, which can only upload that
+machine's snapshot and exchange queued requests, and a **runner** token, which
+can only claim, heartbeat and report conversations. The Worker stores only token
+hashes; **Replace tokens** issues new ones and **Remove** revokes both at once
+and drops the machine's snapshot. Machine tokens never reach a session route,
+and each machine's runner IDs map to conversation owners of its own, so one
+machine can never act on another's claim.
+
+Machines are ordered. The first machine heard from in the last five minutes is
+**on duty**: it reads work items and the inbox, applies Mark done and inbox
+requests and publishes the daily review. Every collector asks the Worker
+whether it is on duty before each scan, so exactly one machine applies each
+request. New conversations go to the first machine whose runner called in the
+last two minutes (an idle runner claims every two seconds and a busy one
+heartbeats every ten, so a restart or short network drop hands nothing over).
+A conversation stays on the machine that claimed it, where its native sessions,
+journal and worktrees live.
+
+While a conversation's machine is away and another is present, the conversation
+offers **Continue on another machine**. That releases the claim without
+replaying anything: a step in flight is abandoned with an unknown outcome under
+a new generation, so the away machine's late reports are refused, and the next
+machine to claim it starts a new coordinator from the conversation's history.
+Its earlier native sessions are never resumed, and the coordinator checks GitHub
+before repeating any change.
+
+Work in progress follows the conversation through GitHub, for **private
+repositories only**. Every five minutes while a change child works, and when
+each of its turns ends, the runner saves the worktree to the ref
+`refs/projects/wip/<conversation>/<child>` (never a branch, so it starts no
+checks), built in a private index so the agent's own index is untouched. A
+repository GitHub does not confirm as private is never saved, because anyone
+who can read a repository can list and fetch such refs. Ignored files are never
+saved; a changed file over 5 MB or that looks like a credential (`.env*`,
+`.dev.vars`, `.npmrc`, SSH and other keys, names with credential, secret or
+token) keeps its committed version, or stays local when new. Pushes run the
+repository's own hooks. Copies are removed once GitHub has the work or its
+branch has landed, decided from what GitHub lists rather than process memory.
+Continuing a child's workspace on another machine recreates it from the newest
+copy (or the pushed branch, when newer) as uncommitted changes on the same
+branch and tells the new session how recent that copy is.
+
+Each machine has one `~/.local/share/project-overview/machine.json` for its
+collector and runner, written by `scripts/install-machine.mjs`:
+
+| Field | Meaning |
+| --- | --- |
+| `host` | The machine id the site showed. |
+| `endpoint` | The site's URL. |
+| `root`, `home` | The folder holding your repositories, and your home folder. |
+| `agents` | The apps signed in on this machine (`claude`, `codex`); conversations never start another. |
+| `collectorTokenFile`, `tokenFile` | Owner-only files holding the two tokens, for a machine without `doppler`. With `doppler` and neither file, the tokens come from that config. |
+| `workRepo` | Optional: the repository whose issues labelled `work` are work items. |
+| `inboxAccount` | Optional: the Gmail account read through `gws`. |
+| `helpers` | Optional: `localServers` (local MCP servers Claude helpers may use) and `deniedTools` (tools to hide from them). |
+| `doppler` | Optional: a Doppler `project`/`config` holding the machine's `COLLECTOR_TOKEN` and `RUNNER_TOKEN` and, optionally, a read-only GitHub App, read with the read-only service token in `doppler-token` (mode 600). The collector runs with only its own token and the App's secrets; the runner reads its token once at start and keeps it out of every environment. |
+| `concurrency`, `quickConcurrency` | Standard conversations at once (1–5, default 3) and extra quick-work slots (0–5, default 5). |
+
+## Conversations
+
+Each conversation gives a **master** an outcome. The master is Codex unless you
+choose Claude in the composer (remembered per device); on a machine without
+Codex it is Claude. It is read-only and makes one structured decision at a
+time: dispatch a child, finish, or ask you for a material decision. A child is
+a native Claude Code or Codex session: **change** children work in their own
+Git worktree from current `origin/main`; **read** children answer questions and
+change nothing. Implementation goes straight to one change child, which
+investigates as part of the work. Child results resume the same master. There
+is no additional provider API key, hosted agent runtime or inbound tunnel.
+
+When a child returns, the runner adds current evidence: HEAD, branch, changed
+paths, commits not yet pushed, and the branch's pull request with its checks.
+The master checks evidence before declaring anything complete; a native turn
+ending does not prove tests, merge or deployment, and nothing here invents
+progress or verification. Repository instructions own setup, checks and
+delivery.
+
+- **Feedback** can be sent while queued or running. It reaches the agent at
+  work within seconds (Codex through `turn/steer`, Claude through its stream
+  input) and the master still reviews it at its next decision. **Stop work**
+  cancels; cancellation cannot recall effects already performed.
+- **Progress**: agents emit bounded `PROJECTS_PROGRESS` notes; the conversation
+  shows a **Now** panel (the step in progress, what follows, what is done), the
+  working agent's own plan, and for a change child the branch's changed files
+  with line counts. Five-minute updates are saved by the conversation's alarm,
+  survive browser closure and never repeat old work as new.
+- **Results** start with one plain sentence (the conversation's status line),
+  at most four short bullets, and a **Your move:** line when you must act.
+  Documents named in results, notes or messages are listed with their saved
+  edition. `src/run-text.ts` owns this presentation and only removes protocol
+  residue.
+- **Screenshots** can be pasted or added to messages; the browser re-encodes
+  and bounds them and both master and children receive them.
+- **Quick work** (email replies, unsubscribes) has its own slots and lighter
+  prompts, so it never waits behind long work.
+- **Bounds**: ten active standard and thirty active quick conversations, 30 and
+  60 starts an hour, 20 user turns and 24 children per conversation, 12 master
+  decisions a turn.
+
+Permissions: a Codex change child uses a named permission profile for its
+worktree and Git directories, with network access and no interactive
+approvals; the primary checkout stays read-only. A Claude change child has
+Read/Glob/Grep/Edit/Write/Bash; a read child and the master only inspect. The
+master and read-only recovery get only this conversation's browser. Helpers
+also get the user's connected accounts, read and write: Claude allows every
+claude.ai connector plus the local MCP servers in the machine's
+`helpers.localServers`, hiding other local servers and `helpers.deniedTools`;
+Codex approves its app connectors but disables account administration. Sending,
+replying to and forwarding email stay off in both, so email stays a draft until
+you approve each message. Codex's macOS sandbox cannot start a local browser,
+so local browser checks go to a Claude child. These are trusted-user sessions
+with access to the machine's existing tools and logins, not a sandbox for
+untrusted users.
+
+Recovery: each dispatch is journalled locally before it runs. A runner restart
+keeps its claim; once the old process has exited and the workspace is verified,
+the same child session is resumed **read-only** to reconcile what finished, and
+the master decides what remains. Uncertain writes are never replayed. A release
+restarts runners with `SIGUSR2`: the runner takes no new work, lets each turn
+finish and save its place, then exits for the new bundle (work still running
+after twenty minutes stops as on `SIGTERM` and recovers).
+
+### Conversation browsers
+
+Native sessions use the pinned Playwright MCP client over CDP with the Worker's
+Cloudflare Browser Run binding. Before each turn the runner exchanges its claim
+for a short-lived browser capability signed by the conversation; each WebSocket
+handshake checks it with the current claim, generation and heartbeat. The
+browser starts on first use and can reach only `BROWSER_HOSTS`. Read sessions
+navigate and wait; change children may also click, type and capture. The
+conversation page offers **Watch browser** and **Open browser / sign in**
+(one-minute links for the signed-in owner). Browsers close after five idle
+minutes or thirty in all; no Cloudflare credential reaches a machine.
+
+## Work items (optional)
+
+With `workRepo` set, a work item is a GitHub issue labelled `work` in that
+repository: its type is the kind of work, its milestone the initiative,
+`customer:` labels who drives it and `repo:` labels the repositories it
+touches. There is no second backlog. The machine on duty reads open issues and
+those closed in the last three weeks; a failed or truncated read is
+unavailable, never an empty list. **Bigger work** on Today groups them by
+customer and initiative, with each item's status, next step and signals
+(conversations, new email, failing checks, due date), parsed from an optional
+**Current position** block in the issue body.
+
+**Mark done** stores only the issue number; the machine on duty closes the
+issue with its signed-in GitHub CLI on its next run and reports back. The
+Worker holds no GitHub credential and pull requests are never merged or closed.
+
+`npm run hooks:install` (or the installer's `--hooks`) adds Claude and Codex
+hooks that link each session to a work item: the assistant classifies an
+unlinked session and records `work: #123` or `work: none` on its final reply's
+last line; your own `work:` reply always wins. Associations stay on the machine
+and never include prompts or transcripts. Codex asks you to trust the hooks
+once.
+
+## Inbox (optional)
+
+With `inboxAccount` set, the machine on duty reads up to 200 inbox threads as
+metadata through its existing `gws` login, and the latest non-draft message of
+each as bounded plain text (quoted history removed, at most 4,000 characters).
+Text lives only in the latest snapshot, is stripped from the overview and is
+read one thread at a time; it never enters telemetry, prompts or the daily
+email. **Reply** starts a quick conversation that drafts the reply in Gmail for
+your review. **Archive** and **Unsubscribe** follow the Mark done pattern;
+unsubscribe uses RFC 8058 one-click only, to a public HTTPS host checked on the
+connection's own DNS lookup, and otherwise starts a conversation.
+
+## Daily review (optional)
+
+A reasoning review on the machine on duty can publish a verified daily edition
+through `service.mjs --review <file> [--send-daily]`: the Worker requires a
+fresh work scan, today's edition, a recent source time and a matching content
+hash, shows it on Today and emails it once to `OWNER_EMAIL`. "Today" is the
+date in `TIME_ZONE` (UTC unless the deployment sets one). The edition and
+email share one safe Markdown renderer (no raw HTML or images, HTTPS links
+only). The email has no idempotency key, so only a send reported as failed is
+retried, a concurrent publish waits for the send in flight, and a send whose
+outcome was never recorded is never repeated.
+
+## Notifications
+
+Projects sends a Web Push notification when a conversation becomes your move:
+Ready, Needs you or Failed. Pushes carry no payload: the device fetches the
+notice with its own session, so no title or text crosses the browser vendors'
+push services. The Worker posts only to those services and forgets a device
+they report gone. On an iPhone, notifications need Projects added to the Home
+Screen.
+
+## Evidence and limits
+
+- Git is read without optional locks: no fetch, reset, clean or checkout.
+  Ahead/behind uses the cached upstream and says so.
+- Codex: unarchived native tasks, not necessarily open windows. Claude: session
+  records plus a live matching process; old status is open, not running.
+- A failing draft PR is in progress, and so is a changed or unpushed checkout
+  while a session in that worktree is recent; otherwise it needs a look, as do
+  failing ready PRs, conflicts and unreadable state. Unpushed means commits only
+  that machine holds. A worktree Git cannot reach is unverified, never clean. A
+  stale observation never downgrades a concern.
+- Progress is attributed plan text, checkbox counts or the latest merge; a merge
+  is not proof of deployment. Nothing invents percentages.
+- GitHub is read through each machine's signed-in `gh`, or a short-lived,
+  read-only GitHub App token limited to the observed repositories.
+- Discovery ignores hidden folders, symlinks, `zarchive` and `_archive`; limits
+  fail closed or show explicit incomplete coverage.
+
+## Security
+
+- **Sign-in**: email codes sent through Cloudflare Email Service to allowlisted
+  addresses only. Codes expire after ten minutes, allow five attempts and are
+  consumed once; issuance is rate-limited. Only salted code hashes and session
+  hashes are stored. Sessions last seven days, logout revokes them, cookies are
+  Secure, HttpOnly, SameSite=Strict and host-only, and every browser write must
+  be same-origin.
+- **Machines** authenticate with their own tokens, stored as hashes; collector
+  and runner tokens reach only their own routes and never read the overview.
+- **Whoever can sign in can act on your machines** with your logins and
+  connected accounts, so keep `ALLOWED_EMAILS` to yourself.
+- **Telemetry** (`src/telemetry.ts`) is a runtime-validated allowlist of fixed
+  categories, ids, counts and durations: no prompts, summaries, email
+  addresses, native session ids, paths, commands, tool output, exception text
+  or credentials.
+
+## Observability
+
+Cloudflare Observability for the Worker holds production logs and traces.
+Custom spans cover requests, authentication, conversation reads and writes,
+dispatch, heartbeat and report; responses carry `X-Projects-Request-Id` for
+finding the matching log. The runner journals a bounded window of timing events
+(`native_started`/`native_finished` sharing a `turnId`, workspace preparation,
+recovery, master decisions) and reports them with its receipts; they correlate
+by conversation, generation and event id. Logs are diagnostic, not an execution
+ledger. Logs are kept at 100%, traces sampled at 10%, and routine successful
+polls at 1%.
+
+## Development
+
+Node 24 or newer:
+
+```sh
+npm ci
+npm run dev:api
+npm run dev
+```
+
+The preview runs at http://127.0.0.1:5278 against a local Worker on port 8798
+(`worker/local.ts`, loopback only, never used in production). Locally you are
+the owner: add a machine on the Projects page, then point a local
+`machine.json` at `http://127.0.0.1:8798` and run `npm run collect -- <config>`
+or `npm run runner -- <config>`.
+
+Checks: `npm run typecheck`, `npm test`, `npm run build`,
+`npm run collector:build` and `npm audit --audit-level=high`.
+
+## Releases
+
+CI runs the checks on every pull request. A release is a reviewed, merged pull
+request and a manual **Deploy** workflow run on `main`, which:
+
+1. fills `wrangler.jsonc` (which holds placeholders) with the deployment's
+   identity from repository variables (`PROJECTS_HOST`, `PROJECTS_PORTFOLIO`,
+   `PROJECTS_OWNER_EMAIL`, `PROJECTS_EMAIL_FROM` and optionally
+   `PROJECTS_TIME_ZONE`);
+2. checks the merged pull request, CI and, when
+   `.github/release-policy.json` requires it, a passing `security-review`
+   status from the bot named by `SECURITY_REVIEW_BOT_ID`;
+3. fetches secrets from Doppler through a project-scoped OIDC identity and
+   uploads only `secrets.required` (`ALLOWED_EMAILS`, `VAPID_PRIVATE_KEY`),
+   removing any other Worker secret;
+4. deploys with immediate Durable Object code updates and verifies the live
+   version, its commit, assets, settings, secret allowlist, that unknown tokens
+   are refused, and that every object runs the new version.
+
+Transient Cloudflare failures retry with backoff; anything else stops the
+release. After a deploy that changes the machine bundles, run
+`node scripts/install-machine.mjs` on each connected machine: it keeps the
+machine's config and tokens and restarts its runner at the next pause between
+turns. A machine that is away gets the release when it returns.
