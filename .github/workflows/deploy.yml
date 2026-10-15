@@ -6,7 +6,7 @@ permissions:
   checks: read
   statuses: read
   pull-requests: read
-  id-token: write
+
 concurrency:
   group: production-deploy
   cancel-in-progress: false
@@ -38,7 +38,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
-          DOPPLER_IDENTITY_ID: ${{ vars.DOPPLER_IDENTITY_ID }}
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
           SECURITY_REVIEW_BOT_ID: ${{ vars.SECURITY_REVIEW_BOT_ID }}
         run: node .github/scripts/release-gates.mjs
       - run: npm audit --audit-level=high
@@ -48,10 +48,10 @@ jobs:
       - uses: DopplerHQ/secrets-fetch-action@451892f16195f9ac360e1a5bcbf0b5fd0e957534
         id: deployment-secrets
         with:
-          auth-method: oidc
-          doppler-identity-id: ${{ vars.DOPPLER_IDENTITY_ID }}
+          auth-method: token
+          doppler-token: ${{ secrets.DOPPLER_TOKEN }}
           doppler-project: project-overview
-          doppler-config: prod
+          doppler-config: prd
           inject-env-vars: 'true'
       - run: node .github/scripts/build-secrets-file.mjs "${RUNNER_TEMP}/projects-secrets.json"
       - name: Deploy and verify production

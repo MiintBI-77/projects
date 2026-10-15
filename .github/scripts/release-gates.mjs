@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { unstable_readConfig } from "wrangler";
 import { requiredSecretNames } from "./wrangler-config.mjs";
-const { GH_TOKEN, REPO, SHA, DOPPLER_IDENTITY_ID, SECURITY_REVIEW_BOT_ID } =
+const { GH_TOKEN, REPO, SHA, DOPPLER_TOKEN, SECURITY_REVIEW_BOT_ID } =
   process.env;
-if (!DOPPLER_IDENTITY_ID)
-  throw Error("Configure the project-scoped Doppler production identity first");
+if (!DOPPLER_TOKEN)
+  throw Error("Configure the production DOPPLER_TOKEN environment secret first");
 // Whether releases need a security review is committed policy, changed only
 // by a reviewed pull request; the repository variable only names the bot whose
 // passing "security-review" status counts, or "none" where the policy allows.
